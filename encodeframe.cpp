@@ -231,19 +231,30 @@ static inline void interleave4x16b(uint8_t* VS_RESTRICT dst, const uint8_t* VS_R
 static void VS_CC encodeFrame(const VSMap* in, VSMap* out, void*, VSCore*, const VSAPI* vsapi) {
 	int err = 0;
 	
-	// quality only applicable to JPEG
-	int quality = vsapi->mapGetIntSaturated(in, "quality", 0, &err);
-	if(err)
-		quality = 75;
-	if(quality < 0 || quality > 100) {
-		vsapi->mapSetError(out, "EncodeFrame: Quality must be between 0 and 100");
-		return;
-	}
+	int no_param = 0;
+	int param = vsapi->mapGetIntSaturated(in, "param", 0, &no_param);
 	
 	std::string imgFormat = vsapi->mapGetData(in, "imgformat", 0, nullptr);
 	if(imgFormat != "PNG" && imgFormat != "JPEG") {
 		vsapi->mapSetError(out, "EncodeFrame: Format must be PNG/JPEG");
 		return;
+	}
+	
+	if(imgFormat == "JPEG") {
+		if(no_param) param = 75;
+		if(param < 0 || param > 100) {
+			vsapi->mapSetError(out, "EncodeFrame: JPEG quality must be between 0 and 100");
+			return;
+		}
+	}
+	if(imgFormat == "PNG") {
+		if(no_param) param = FPNGE_COMPRESS_LEVEL_DEFAULT;
+		if(param < 1 || param > FPNGE_COMPRESS_LEVEL_BEST) {
+			#define _STRINGIFY(i) #i
+			vsapi->mapSetError(out, "EncodeFrame: PNG level must be between 1 and " _STRINGIFY(FPNGE_COMPRESS_LEVEL_BEST));
+			#undef _STRINGIFY
+			return;
+		}
 	}
 	
 	const VSFrame* frame = vsapi->mapGetFrame(in, "frame", 0, nullptr);
@@ -392,14 +403,14 @@ static void VS_CC encodeFrame(const VSMap* in, VSMap* out, void*, VSCore*, const
 			vsapi->mapSetError(out, "EncodeFrame: Failed to allocate libjpeg handle");
 			return;
 		}
-		if(tjCompress2(handle, data, width, stride, height, isGray ? TJPF_GRAY : TJPF_RGB, &(encData), &encSize, subsamp, quality, TJFLAG_FASTDCT)) {
+		if(tjCompress2(handle, data, width, stride, height, isGray ? TJPF_GRAY : TJPF_RGB, &(encData), &encSize, subsamp, param, TJFLAG_FASTDCT)) {
 			vsapi->mapSetError(out, (std::string("EncodeFrame: libjpeg compress error: ") + tjGetErrorStr()).c_str());
 			tjDestroy(handle);
 			VSH_ALIGNED_FREE(data);
 			return;
 		}
 		tjDestroy(handle);
-	} else if(imgFormat == "PNG") {
+	} else { // imgFormat == "PNG"
 		encSize = FPNGEOutputAllocSize(fi->bytesPerSample, numChannels, width, height);
 		VSH_ALIGNED_MALLOC(&encData, encSize, MWORD_SIZE);
 		if(!encData) {
@@ -407,7 +418,9 @@ static void VS_CC encodeFrame(const VSMap* in, VSMap* out, void*, VSCore*, const
 			vsapi->mapSetError(out, "EncodeFrame: Failed to allocate output buffer");
 			return;
 		}
-		encSize = FPNGEEncode(fi->bytesPerSample, numChannels, data, width, stride, height, encData, nullptr);
+		struct FPNGEOptions options;
+		FPNGEFillOptions(&options, param, 0);
+		encSize = FPNGEEncode(fi->bytesPerSample, numChannels, data, width, stride, height, encData, &options);
 	}
 	VSH_ALIGNED_FREE(data);
 	
@@ -419,5 +432,5 @@ static void VS_CC encodeFrame(const VSMap* in, VSMap* out, void*, VSCore*, const
 
 VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI *vspapi) {
 	vspapi->configPlugin("animetosho.encodeframe", "encodeframe", "VapourSynth EncodeFrame module", VS_MAKE_VERSION(1, 0), VAPOURSYNTH_API_VERSION, 0, plugin);
-	vspapi->registerFunction("EncodeFrame", "frame:vframe;imgformat:data;quality:int:opt;alpha:vframe:opt;", "bytes:data;", encodeFrame, nullptr, plugin);
+	vspapi->registerFunction("EncodeFrame", "frame:vframe;imgformat:data;param:int:opt;alpha:vframe:opt;", "bytes:data;", encodeFrame, nullptr, plugin);
 }
