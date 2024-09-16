@@ -403,7 +403,7 @@ static void VS_CC encodeFrame(const VSMap* in, VSMap* out, void*, VSCore*, const
 			vsapi->mapSetError(out, "EncodeFrame: Failed to allocate libjpeg handle");
 			return;
 		}
-		if(tjCompress2(handle, data, width, stride, height, isGray ? TJPF_GRAY : TJPF_RGB, &(encData), &encSize, subsamp, param, TJFLAG_FASTDCT)) {
+		if(tjCompress2(handle, data, width, stride, height, isGray ? TJPF_GRAY : TJPF_RGB, &encData, &encSize, subsamp, param, TJFLAG_FASTDCT)) {
 			vsapi->mapSetError(out, (std::string("EncodeFrame: libjpeg compress error: ") + tjGetErrorStr()).c_str());
 			tjDestroy(handle);
 			VSH_ALIGNED_FREE(data);

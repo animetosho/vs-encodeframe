@@ -11,7 +11,7 @@ vapoursynth_dep = dependency('vapoursynth', version: '>=55').partial_dependency(
 
 deps = [
   vapoursynth_dep,
-  dependency('libturbojpeg', version: '>=2.0.0, <3.0.0', static: static),
+  dependency('libturbojpeg', version: '>=1.2.0', static: static),
 ]
 
 install_dir = vapoursynth_dep.get_variable(pkgconfig: 'libdir') / 'vapoursynth'
