@@ -1,5 +1,5 @@
 project('EncodeFrame', 'cpp',
-  default_options: ['buildtype=release', 'warning_level=2', 'b_lto=true', 'b_ndebug=if-release', 'cpp_std=c++14'],
+  default_options: ['buildtype=release', 'warning_level=2', 'b_lto=true', 'b_ndebug=if-release', 'cpp_std=c++14', 'cpp_rtti=false', 'cpp_eh=none'],
   license: 'CC0',
   meson_version: '>=0.51.0',
   version: '2'
