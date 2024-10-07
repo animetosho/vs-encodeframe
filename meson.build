@@ -10,9 +10,11 @@ isa = get_option('isa')
 
 vapoursynth_dep = dependency('vapoursynth', version: '>=55').partial_dependency(compile_args: true, includes: true)
 
+jpeg_dep = dependency('libturbojpeg', required: false, version: '>=1.2.0', static: static)
+webp_dep = dependency('libwebp', required: false, version: '>=1.0.0', static: static)
+
 deps = [
-  vapoursynth_dep,
-  dependency('libturbojpeg', version: '>=1.2.0', static: static),
+  vapoursynth_dep, jpeg_dep, webp_dep
 ]
 
 install_dir = vapoursynth_dep.get_variable(pkgconfig: 'libdir') / 'vapoursynth'
@@ -32,6 +34,13 @@ if host_machine.cpu_family().startswith('x86')
   if isa == 'avx2'
     add_project_arguments(['-mavx2','-mpclmul'], language: 'cpp')
   endif
+endif
+
+if jpeg_dep.found()
+  add_global_arguments('-DHAVE_JPEG=1', language : 'cpp')
+endif
+if webp_dep.found()
+  add_global_arguments('-DHAVE_WEBP=1', language : 'cpp')
 endif
 
 if static

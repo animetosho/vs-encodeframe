@@ -4,7 +4,12 @@
 #include <string>
 
 #include "fpnge/fpnge.h"
+#ifdef HAVE_JPEG
 #include <turbojpeg.h>
+#endif
+#ifdef HAVE_WEBP
+#include <webp/encode.h>
+#endif
 
 // requires SSE4.1 minimum
 #ifdef __AVX2__
@@ -300,28 +305,50 @@ static inline void interleave4x16b(uint8_t* VS_RESTRICT dst, const uint8_t* VS_R
 static void VS_CC encodeFrame(const VSMap* in, VSMap* out, void*, VSCore*, const VSAPI* vsapi) {
 	int err = 0;
 	
-	int no_param = 0;
-	int param = vsapi->mapGetIntSaturated(in, "param", 0, &no_param);
+	int no_quality = 0, no_effort = 0;
+	int quality = vsapi->mapGetInt(in, "quality", 0, &no_quality);
+	int effort = vsapi->mapGetInt(in, "effort", 0, &no_effort);
+	if(no_quality) quality = 75;
 	
 	std::string imgFormat = vsapi->mapGetData(in, "imgformat", 0, nullptr);
-	if(imgFormat != "PNG" && imgFormat != "JPEG") {
-		vsapi->mapSetError(out, "EncodeFrame: Format must be PNG/JPEG");
+	if(imgFormat != "PNG"
+#ifdef HAVE_JPEG
+	 && imgFormat != "JPEG"
+#endif
+#ifdef HAVE_WEBP
+	 && imgFormat != "WEBP-VP8" && imgFormat != "WEBP"
+#endif
+	) {
+		vsapi->mapSetError(out, "EncodeFrame: Format must be PNG"
+#ifdef HAVE_JPEG
+	 "/JPEG"
+#endif
+#ifdef HAVE_WEBP
+	 "/WEBP/WEBP-VP8"
+#endif
+		);
 		return;
 	}
 	
-	if(imgFormat == "JPEG") {
-		if(no_param) param = 75;
-		if(param < 0 || param > 100) {
-			vsapi->mapSetError(out, "EncodeFrame: JPEG quality must be between 0 and 100");
+	if(quality < 0 || quality > 100) {
+		vsapi->mapSetError(out, "EncodeFrame: quality must be between 0 and 100");
+		return;
+	}
+	if(imgFormat == "PNG") {
+		if(no_effort) effort = FPNGE_COMPRESS_LEVEL_DEFAULT;
+		if(effort < 1 || effort > FPNGE_COMPRESS_LEVEL_BEST) {
+			#define _STR_HELPER(i) #i
+			#define _STRINGIFY(i) _STR_HELPER(i)
+			vsapi->mapSetError(out, "EncodeFrame: PNG effort must be between 1 and " _STRINGIFY(FPNGE_COMPRESS_LEVEL_BEST));
+			#undef _STR_HELPER
+			#undef _STRINGIFY
 			return;
 		}
 	}
-	if(imgFormat == "PNG") {
-		if(no_param) param = FPNGE_COMPRESS_LEVEL_DEFAULT;
-		if(param < 1 || param > FPNGE_COMPRESS_LEVEL_BEST) {
-			#define _STRINGIFY(i) #i
-			vsapi->mapSetError(out, "EncodeFrame: PNG level must be between 1 and " _STRINGIFY(FPNGE_COMPRESS_LEVEL_BEST));
-			#undef _STRINGIFY
+	if(imgFormat == "WEBP" || imgFormat == "WEBP-VP8") {
+		if(no_effort) effort = 4;
+		if(effort < 1 || effort > 6) {
+			vsapi->mapSetError(out, "EncodeFrame: WebP effort must be between 1 and 6");
 			return;
 		}
 	}
@@ -339,9 +366,14 @@ static void VS_CC encodeFrame(const VSMap* in, VSMap* out, void*, VSCore*, const
 	
 	// TODO: TurboJPEG 3 supports >8b precision for JPEGs
 	// also consider YUV as a colour source?
-	if(imgFormat == "JPEG" && fi->bytesPerSample > 1) {
+	if((imgFormat == "JPEG" || imgFormat == "WEBP" || imgFormat == "WEBP-VP8") && fi->bytesPerSample > 1) {
 		vsapi->freeFrame(frame);
-		vsapi->mapSetError(out, "EncodeFrame: JPEG only supports 1 byte per sample");
+		vsapi->mapSetError(out, "EncodeFrame: JPEG/WebP only supports 1 byte per sample");
+		return;
+	}
+	if((imgFormat == "WEBP" || imgFormat == "WEBP-VP8") && fi->colorFamily == cfGray) {
+		vsapi->freeFrame(frame);
+		vsapi->mapSetError(out, "EncodeFrame: WebP doesn't support grayscale - please convert to RGB(A) instead");
 		return;
 	}
 	
@@ -451,11 +483,12 @@ static void VS_CC encodeFrame(const VSMap* in, VSMap* out, void*, VSCore*, const
 	if(alpha) vsapi->freeFrame(alpha);
 	
 	
-	/// encode PNG/JPEG
+	/// encode to image format
 	uint8_t* encData;
 	size_t encSize;
 	
 	if(imgFormat == "JPEG") {
+#ifdef HAVE_JPEG
 		// TODO: support subsampling option
 		int subsamp = isGray ? TJSAMP_GRAY : TJSAMP_420;
 		encSize = tjBufSize(width, height, subsamp);
@@ -472,13 +505,92 @@ static void VS_CC encodeFrame(const VSMap* in, VSMap* out, void*, VSCore*, const
 			vsapi->mapSetError(out, "EncodeFrame: Failed to allocate libjpeg handle");
 			return;
 		}
-		if(tjCompress2(handle, data, width, stride, height, isGray ? TJPF_GRAY : TJPF_RGB, &encData, &encSize, subsamp, param, TJFLAG_FASTDCT)) {
+		if(tjCompress2(handle, data, width, stride, height, isGray ? TJPF_GRAY : TJPF_RGB, &encData, &encSize, subsamp, quality, TJFLAG_FASTDCT)) {
 			vsapi->mapSetError(out, (std::string("EncodeFrame: libjpeg compress error: ") + tjGetErrorStr()).c_str());
 			tjDestroy(handle);
 			VSH_ALIGNED_FREE(data);
 			return;
 		}
 		tjDestroy(handle);
+#endif
+	} else if(imgFormat == "WEBP" || imgFormat == "WEBP-VP8") {
+#ifdef HAVE_WEBP
+		WebPConfig config;
+		WebPPicture pic;
+		if(!WebPConfigPreset(&config, WEBP_PRESET_DEFAULT, quality) ||
+		   !WebPPictureInit(&pic)) {
+			VSH_ALIGNED_FREE(data);
+			vsapi->mapSetError(out, "EncodeFrame: Failed to initialize WebP");
+			return;
+		}
+		config.lossless = (imgFormat == "WEBP" ? 1 : 0);
+		config.method = effort;
+		// TODO: support other options?
+		
+		if(!WebPValidateConfig(&config)) {
+			VSH_ALIGNED_FREE(data);
+			vsapi->mapSetError(out, "EncodeFrame: Invalid WebP configuration");
+			return;
+		}
+		
+		// TODO: support YUV input?
+		pic.width = width;
+		pic.height = height;
+		if(!WebPPictureAlloc(&pic)) {
+			VSH_ALIGNED_FREE(data);
+			vsapi->mapSetError(out, "EncodeFrame: Failed to allocate WebP output");
+			return;
+		}
+		// TODO: consider writing directly to WebPPicture to avoid this importing business
+		if(numChannels == 3)
+			WebPPictureImportRGB(&pic, data, stride);
+		if(numChannels == 4)
+			WebPPictureImportRGBA(&pic, data, stride);
+		VSH_ALIGNED_FREE(data);
+		
+		WebPMemoryWriter wrt;
+		WebPMemoryWriterInit(&wrt);
+		pic.writer = WebPMemoryWrite;
+		pic.custom_ptr = &wrt;
+		
+		int ok = WebPEncode(&config, &pic);
+		WebPPictureFree(&pic);
+		if(!ok) {
+			std::string error("EncodeFrame: Failed to encode WebP: ");
+			switch(pic.error_code) {
+				case VP8_ENC_ERROR_OUT_OF_MEMORY:
+					error += "memory error allocating objects"; break;
+				case VP8_ENC_ERROR_BITSTREAM_OUT_OF_MEMORY:
+					error += "memory error while flushing bits"; break;
+				case VP8_ENC_ERROR_NULL_PARAMETER:
+					error += "a pointer parameter is NULL"; break;
+				case VP8_ENC_ERROR_INVALID_CONFIGURATION:
+					error += "configuration is invalid"; break;
+				case VP8_ENC_ERROR_BAD_DIMENSION:
+					error += "picture has invalid width/height"; break;
+				case VP8_ENC_ERROR_PARTITION0_OVERFLOW:
+					error += "partition is bigger than 512k"; break;
+				case VP8_ENC_ERROR_PARTITION_OVERFLOW:
+					error += "partition is bigger than 16M"; break;
+				case VP8_ENC_ERROR_BAD_WRITE:
+					error += "error while flushing bytes"; break;
+				case VP8_ENC_ERROR_FILE_TOO_BIG:
+					error += "file is bigger than 4G"; break;
+				case VP8_ENC_ERROR_USER_ABORT:
+					error += "abort request by user"; break;
+				default:
+					error += "unknown code (" + std::to_string(pic.error_code) + ")";
+			}
+			WebPMemoryWriterClear(&wrt);
+			vsapi->mapSetError(out, error.c_str());
+			return;
+		}
+		
+		// we get the pointer, instead of allocating it ourself, so return from here and skip the PNG/JPEG path
+		vsapi->mapSetData(out, "bytes", reinterpret_cast<char*>(wrt.mem), wrt.size, dtBinary, maReplace);
+		WebPMemoryWriterClear(&wrt);
+		return;
+#endif
 	} else { // imgFormat == "PNG"
 		encSize = FPNGEOutputAllocSize(fi->bytesPerSample, numChannels, width, height);
 		VSH_ALIGNED_MALLOC(&encData, encSize, MWORD_SIZE);
@@ -488,7 +600,7 @@ static void VS_CC encodeFrame(const VSMap* in, VSMap* out, void*, VSCore*, const
 			return;
 		}
 		struct FPNGEOptions options;
-		FPNGEFillOptions(&options, param, 0);
+		FPNGEFillOptions(&options, effort, 0);
 		encSize = FPNGEEncode(fi->bytesPerSample, numChannels, data, width, stride, height, encData, &options);
 	}
 	VSH_ALIGNED_FREE(data);
@@ -501,5 +613,5 @@ static void VS_CC encodeFrame(const VSMap* in, VSMap* out, void*, VSCore*, const
 
 VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI *vspapi) {
 	vspapi->configPlugin("animetosho.encodeframe", "encodeframe", "VapourSynth EncodeFrame module", VS_MAKE_VERSION(1, 0), VAPOURSYNTH_API_VERSION, 0, plugin);
-	vspapi->registerFunction("EncodeFrame", "frame:vframe;imgformat:data;param:int:opt;alpha:vframe:opt;", "bytes:data;", encodeFrame, nullptr, plugin);
+	vspapi->registerFunction("EncodeFrame", "frame:vframe;imgformat:data;quality:int:opt;effort:int:opt;alpha:vframe:opt;", "bytes:data;", encodeFrame, nullptr, plugin);
 }
