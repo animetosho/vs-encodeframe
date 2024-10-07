@@ -6,6 +6,7 @@ project('EncodeFrame', 'cpp',
 )
 
 static = get_option('static')
+isa = get_option('isa')
 
 vapoursynth_dep = dependency('vapoursynth', version: '>=55').partial_dependency(compile_args: true, includes: true)
 
@@ -22,7 +23,15 @@ sources = [
 ]
 
 if host_machine.cpu_family().startswith('x86')
-  add_project_arguments('-msse4.1', language: 'cpp')
+  if isa == 'sse4'
+    add_project_arguments('-msse4.1', language: 'cpp')
+  endif
+  if isa == 'avx'
+    add_project_arguments(['-mavx','-mpclmul'], language: 'cpp')
+  endif
+  if isa == 'avx2'
+    add_project_arguments(['-mavx2','-mpclmul'], language: 'cpp')
+  endif
 endif
 
 if static

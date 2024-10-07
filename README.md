@@ -14,7 +14,7 @@ ninja -C build
 ninja -C build install
 ```
 
-Note: fpnge is only built with SSE4.1 support. Replace `-msse4.1` with `-mavx2` in *meson.build* if you want an AVX2 baseline.
+Note: fpnge is only built with SSE4.1 support by default. Add `-Disa=avx2` to the first command above to set AVX2 as the baseline.
 
 # Example Usage
 

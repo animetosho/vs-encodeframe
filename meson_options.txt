@@ -3,3 +3,9 @@ option('static',
   value: false,
   description: 'Whether to link everything statically'
 )
+option('isa',
+  type: 'combo',
+  choices: ['sse4', 'avx', 'avx2'],
+  value: 'sse4',
+  description: 'Target x86 SIMD extension'
+)

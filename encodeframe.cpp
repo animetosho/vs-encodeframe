@@ -7,10 +7,23 @@
 #include <turbojpeg.h>
 
 // requires SSE4.1 minimum
-// TODO: add AVX2 support
-#include <smmintrin.h>
-#define MWORD_SIZE 16  // sizeof(__m128i)
-
+#ifdef __AVX2__
+# include <immintrin.h>
+# define MWORD_SIZE 32  // sizeof(__m256i)
+# define MM(f) _mm256_##f
+# define MMSI(f) _mm256_##f##_si256
+# define MIVEC __m256i
+# define BCAST128 _mm256_broadcastsi128_si256
+# define SWAP_MID64(x) _mm256_permute4x64_epi64(x, _MM_SHUFFLE(3,1,2,0))
+#else
+# include <smmintrin.h>
+# define MWORD_SIZE 16  // sizeof(__m128i)
+# define MM(f) _mm_##f
+# define MMSI(f) _mm_##f##_si128
+# define MIVEC __m128i
+# define BCAST128(v) (v)
+# define SWAP_MID64(x) (x)
+#endif
 
 /// planar -> interleaved conversion
 
@@ -24,9 +37,9 @@ static inline void copy1x16b(uint8_t* VS_RESTRICT dst, const uint8_t* VS_RESTRIC
 	
 	int x = 0;
 	for(; x<width-MWORD_SIZE/2+1; x+=MWORD_SIZE/2) {
-		__m128i s0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s0_16 + x));
-		s0 = _mm_or_si128(_mm_sll_epi16(s0, vshl), _mm_srl_epi16(s0, vshr));
-		_mm_store_si128(reinterpret_cast<__m128i*>(d16 + x), s0);
+		MIVEC s0 = MMSI(loadu)(reinterpret_cast<const MIVEC*>(s0_16 + x));
+		s0 = MMSI(or)(MM(sll_epi16)(s0, vshl), MM(srl_epi16)(s0, vshr));
+		MMSI(store)(reinterpret_cast<MIVEC*>(d16 + x), s0);
 	}
 	for(; x<width; x++) {
 		d16[x] = (s0_16[x] << shl) | (s0_16[x] >> shr);
@@ -36,12 +49,15 @@ static inline void copy1x16b(uint8_t* VS_RESTRICT dst, const uint8_t* VS_RESTRIC
 static inline void interleave2x8b(uint8_t* VS_RESTRICT dst, const uint8_t* VS_RESTRICT src0, const uint8_t* VS_RESTRICT src1, int width) {
 	int x = 0;
 	for(; x<width-MWORD_SIZE+1; x+=MWORD_SIZE) {
-		__m128i s0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src0 + x));
-		__m128i s1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src1 + x));
+		MIVEC s0 = MMSI(loadu)(reinterpret_cast<const MIVEC*>(src0 + x));
+		MIVEC s1 = MMSI(loadu)(reinterpret_cast<const MIVEC*>(src1 + x));
 		
-		__m128i* d = reinterpret_cast<__m128i*>(dst + x*2);
-		_mm_store_si128(d+0, _mm_unpacklo_epi8(s0, s1));
-		_mm_store_si128(d+1, _mm_unpackhi_epi8(s0, s1));
+		s0 = SWAP_MID64(s0);
+		s1 = SWAP_MID64(s1);
+		
+		MIVEC* d = reinterpret_cast<MIVEC*>(dst + x*2);
+		MMSI(store)(d+0, MM(unpacklo_epi8)(s0, s1));
+		MMSI(store)(d+1, MM(unpackhi_epi8)(s0, s1));
 	}
 	for(; x<width; x++) {
 		dst[x*2 +0] = src0[x];
@@ -59,15 +75,18 @@ static inline void interleave2x16b(uint8_t* VS_RESTRICT dst, const uint8_t* VS_R
 	
 	int x = 0;
 	for(; x<width-MWORD_SIZE/2+1; x+=MWORD_SIZE/2) {
-		__m128i s0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s0_16 + x));
-		__m128i s1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s1_16 + x));
+		MIVEC s0 = MMSI(loadu)(reinterpret_cast<const MIVEC*>(s0_16 + x));
+		MIVEC s1 = MMSI(loadu)(reinterpret_cast<const MIVEC*>(s1_16 + x));
 		
-		s0 = _mm_or_si128(_mm_sll_epi16(s0, vshl), _mm_srl_epi16(s0, vshr));
-		s1 = _mm_or_si128(_mm_sll_epi16(s1, vshl), _mm_srl_epi16(s1, vshr));
+		s0 = MMSI(or)(MM(sll_epi16)(s0, vshl), MM(srl_epi16)(s0, vshr));
+		s1 = MMSI(or)(MM(sll_epi16)(s1, vshl), MM(srl_epi16)(s1, vshr));
 		
-		__m128i* d = reinterpret_cast<__m128i*>(d16 + x*2);
-		_mm_store_si128(d+0, _mm_unpacklo_epi16(s0, s1));
-		_mm_store_si128(d+1, _mm_unpackhi_epi16(s0, s1));
+		s0 = SWAP_MID64(s0);
+		s1 = SWAP_MID64(s1);
+		
+		MIVEC* d = reinterpret_cast<MIVEC*>(d16 + x*2);
+		MMSI(store)(d+0, MM(unpacklo_epi16)(s0, s1));
+		MMSI(store)(d+1, MM(unpackhi_epi16)(s0, s1));
 	}
 	for(; x<width; x++) {
 		d16[x*2 +0] = (s0_16[x] << shl) | (s0_16[x] >> shr);
@@ -76,33 +95,42 @@ static inline void interleave2x16b(uint8_t* VS_RESTRICT dst, const uint8_t* VS_R
 }
 static inline void interleave3x8b(uint8_t* VS_RESTRICT dst, const uint8_t* VS_RESTRICT src0, const uint8_t* VS_RESTRICT src1, const uint8_t* VS_RESTRICT src2, int width) {
 	int x = 0;
-	__m128i blend1 = _mm_set_epi32(0x0000ff00, 0x00ff0000, 0xff0000ff, 0x0000ff00);
-	__m128i blend2 = _mm_bslli_si128(blend1, 1);
-	__m128i shuf0 = _mm_set_epi32(0x050a0f04, 0x090e0308, 0x0d02070c, 0x01060b00);
-	__m128i shuf1 = _mm_alignr_epi8(shuf0, shuf0, 15);
-	__m128i shuf2 = _mm_alignr_epi8(shuf0, shuf0, 14);
+	MIVEC blend1 = BCAST128(_mm_set_epi32(0x0000ff00, 0x00ff0000, 0xff0000ff, 0x0000ff00));
+	MIVEC blend2 = MMSI(slli)(blend1, 1);
+	MIVEC shuf0 = BCAST128(_mm_set_epi32(0x050a0f04, 0x090e0308, 0x0d02070c, 0x01060b00));
+	MIVEC shuf1 = MM(alignr_epi8)(shuf0, shuf0, 15);
+	MIVEC shuf2 = MM(alignr_epi8)(shuf0, shuf0, 14);
 	for(; x<width-MWORD_SIZE+1; x+=MWORD_SIZE) {
-		__m128i s0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src0 + x));
-		__m128i s1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src1 + x));
-		__m128i s2 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src2 + x));
+		MIVEC s0 = MMSI(loadu)(reinterpret_cast<const MIVEC*>(src0 + x));
+		MIVEC s1 = MMSI(loadu)(reinterpret_cast<const MIVEC*>(src1 + x));
+		MIVEC s2 = MMSI(loadu)(reinterpret_cast<const MIVEC*>(src2 + x));
 		
 		// re-arrange into groups of 3
-		s0 = _mm_shuffle_epi8(s0, shuf0);
-		s1 = _mm_shuffle_epi8(s1, shuf1);
-		s2 = _mm_shuffle_epi8(s2, shuf2);
+		s0 = MM(shuffle_epi8)(s0, shuf0);
+		s1 = MM(shuffle_epi8)(s1, shuf1);
+		s2 = MM(shuffle_epi8)(s2, shuf2);
 		
 		// blend together
-		__m128i d0 = _mm_blendv_epi8(s0, s1, blend1);
-		__m128i d1 = _mm_blendv_epi8(s1, s2, blend1);
-		__m128i d2 = _mm_blendv_epi8(s2, s0, blend1);
-		d0 = _mm_blendv_epi8(d0, s2, blend2);
-		d1 = _mm_blendv_epi8(d1, s0, blend2);
-		d2 = _mm_blendv_epi8(d2, s1, blend2);
+		MIVEC d0 = MM(blendv_epi8)(s0, s1, blend1);
+		MIVEC d1 = MM(blendv_epi8)(s1, s2, blend1);
+		MIVEC d2 = MM(blendv_epi8)(s2, s0, blend1);
+		d0 = MM(blendv_epi8)(d0, s2, blend2);
+		d1 = MM(blendv_epi8)(d1, s0, blend2);
+		d2 = MM(blendv_epi8)(d2, s1, blend2);
 		
-		__m128i* d = reinterpret_cast<__m128i*>(dst + x*3);
-		_mm_store_si128(d+0, d0);
-		_mm_store_si128(d+1, d1);
-		_mm_store_si128(d+2, d2);
+#ifdef __AVX2__
+		s0 = _mm256_permute2x128_si256(d0, d1, 0x20);
+		s1 = _mm256_permute2x128_si256(d2, d0, 0x30);
+		s2 = _mm256_permute2x128_si256(d1, d2, 0x31);
+		d0 = s0;
+		d1 = s1;
+		d2 = s2;
+#endif
+		
+		MIVEC* d = reinterpret_cast<MIVEC*>(dst + x*3);
+		MMSI(store)(d+0, d0);
+		MMSI(store)(d+1, d1);
+		MMSI(store)(d+2, d2);
 	}
 	for(; x<width; x++) {
 		dst[x*3 +0] = src0[x];
@@ -120,36 +148,45 @@ static inline void interleave3x16b(uint8_t* VS_RESTRICT dst, const uint8_t* VS_R
 	__m128i vshl = _mm_set_epi32(0, shr, 0, shl);
 	__m128i vshr = _mm_unpackhi_epi64(vshl, vshl);
 	
-	__m128i shuf0 = _mm_set_epi32(0x0b0a0504, 0x0f0e0908, 0x03020d0c, 0x07060100);
-	__m128i shuf1 = _mm_alignr_epi8(shuf0, shuf0, 14);
-	__m128i shuf2 = _mm_alignr_epi8(shuf0, shuf0, 12);
+	MIVEC shuf0 = BCAST128(_mm_set_epi32(0x0b0a0504, 0x0f0e0908, 0x03020d0c, 0x07060100));
+	MIVEC shuf1 = MM(alignr_epi8)(shuf0, shuf0, 14);
+	MIVEC shuf2 = MM(alignr_epi8)(shuf0, shuf0, 12);
 	int x = 0;
 	for(; x<width-MWORD_SIZE/2+1; x+=MWORD_SIZE/2) {
-		__m128i s0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s0_16 + x));
-		__m128i s1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s1_16 + x));
-		__m128i s2 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s2_16 + x));
+		MIVEC s0 = MMSI(loadu)(reinterpret_cast<const MIVEC*>(s0_16 + x));
+		MIVEC s1 = MMSI(loadu)(reinterpret_cast<const MIVEC*>(s1_16 + x));
+		MIVEC s2 = MMSI(loadu)(reinterpret_cast<const MIVEC*>(s2_16 + x));
 		
-		s0 = _mm_or_si128(_mm_sll_epi16(s0, vshl), _mm_srl_epi16(s0, vshr));
-		s1 = _mm_or_si128(_mm_sll_epi16(s1, vshl), _mm_srl_epi16(s1, vshr));
-		s2 = _mm_or_si128(_mm_sll_epi16(s2, vshl), _mm_srl_epi16(s2, vshr));
+		s0 = MMSI(or)(MM(sll_epi16)(s0, vshl), MM(srl_epi16)(s0, vshr));
+		s1 = MMSI(or)(MM(sll_epi16)(s1, vshl), MM(srl_epi16)(s1, vshr));
+		s2 = MMSI(or)(MM(sll_epi16)(s2, vshl), MM(srl_epi16)(s2, vshr));
 		
 		// re-arrange into groups of 3
-		s0 = _mm_shuffle_epi8(s0, shuf0);
-		s1 = _mm_shuffle_epi8(s1, shuf1);
-		s2 = _mm_shuffle_epi8(s2, shuf2);
+		s0 = MM(shuffle_epi8)(s0, shuf0);
+		s1 = MM(shuffle_epi8)(s1, shuf1);
+		s2 = MM(shuffle_epi8)(s2, shuf2);
 		
 		// blend together
-		__m128i d0 = _mm_blend_epi16(s0, s1, 0b10010010);
-		__m128i d1 = _mm_blend_epi16(s2, s0, 0b10010010);
-		__m128i d2 = _mm_blend_epi16(s1, s2, 0b10010010);
-		d0 = _mm_blend_epi16(d0, s2, 0b00100100);
-		d1 = _mm_blend_epi16(d1, s1, 0b00100100);
-		d2 = _mm_blend_epi16(d2, s0, 0b00100100);
+		MIVEC d0 = MM(blend_epi16)(s0, s1, 0b10010010);
+		MIVEC d1 = MM(blend_epi16)(s2, s0, 0b10010010);
+		MIVEC d2 = MM(blend_epi16)(s1, s2, 0b10010010);
+		d0 = MM(blend_epi16)(d0, s2, 0b00100100);
+		d1 = MM(blend_epi16)(d1, s1, 0b00100100);
+		d2 = MM(blend_epi16)(d2, s0, 0b00100100);
 		
-		__m128i* d = reinterpret_cast<__m128i*>(d16 + x*3);
-		_mm_store_si128(d+0, d0);
-		_mm_store_si128(d+1, d1);
-		_mm_store_si128(d+2, d2);
+#ifdef __AVX2__
+		s0 = _mm256_permute2x128_si256(d0, d1, 0x20);
+		s1 = _mm256_permute2x128_si256(d2, d0, 0x30);
+		s2 = _mm256_permute2x128_si256(d1, d2, 0x31);
+		d0 = s0;
+		d1 = s1;
+		d2 = s2;
+#endif
+		
+		MIVEC* d = reinterpret_cast<MIVEC*>(d16 + x*3);
+		MMSI(store)(d+0, d0);
+		MMSI(store)(d+1, d1);
+		MMSI(store)(d+2, d2);
 	}
 	for(; x<width; x++) {
 		d16[x*3 +0] = (s0_16[x] << shl) | (s0_16[x] >> shr);
@@ -160,21 +197,37 @@ static inline void interleave3x16b(uint8_t* VS_RESTRICT dst, const uint8_t* VS_R
 static inline void interleave4x8b(uint8_t* VS_RESTRICT dst, const uint8_t* VS_RESTRICT src0, const uint8_t* VS_RESTRICT src1, const uint8_t* VS_RESTRICT src2, const uint8_t* VS_RESTRICT src3, int width) {
 	int x = 0;
 	for(; x<width-MWORD_SIZE+1; x+=MWORD_SIZE) {
-		__m128i s0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src0 + x));
-		__m128i s1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src1 + x));
-		__m128i s2 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src2 + x));
-		__m128i s3 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src3 + x));
+		MIVEC s0 = MMSI(loadu)(reinterpret_cast<const MIVEC*>(src0 + x));
+		MIVEC s1 = MMSI(loadu)(reinterpret_cast<const MIVEC*>(src1 + x));
+		MIVEC s2 = MMSI(loadu)(reinterpret_cast<const MIVEC*>(src2 + x));
+		MIVEC s3 = MMSI(loadu)(reinterpret_cast<const MIVEC*>(src3 + x));
 		
-		__m128i mix0 = _mm_unpacklo_epi8(s0, s1);
-		__m128i mix1 = _mm_unpackhi_epi8(s0, s1);
-		__m128i mix2 = _mm_unpacklo_epi8(s2, s3);
-		__m128i mix3 = _mm_unpackhi_epi8(s2, s3);
+		MIVEC mix0 = MM(unpacklo_epi8)(s0, s1);
+		MIVEC mix1 = MM(unpackhi_epi8)(s0, s1);
+		MIVEC mix2 = MM(unpacklo_epi8)(s2, s3);
+		MIVEC mix3 = MM(unpackhi_epi8)(s2, s3);
 		
-		__m128i* d = reinterpret_cast<__m128i*>(dst + x*4);
-		_mm_store_si128(d+0, _mm_unpacklo_epi16(mix0, mix2));
-		_mm_store_si128(d+1, _mm_unpackhi_epi16(mix0, mix2));
-		_mm_store_si128(d+2, _mm_unpacklo_epi16(mix1, mix3));
-		_mm_store_si128(d+3, _mm_unpackhi_epi16(mix1, mix3));
+		s0 = MM(unpacklo_epi16)(mix0, mix2);
+		s1 = MM(unpackhi_epi16)(mix0, mix2);
+		s2 = MM(unpacklo_epi16)(mix1, mix3);
+		s3 = MM(unpackhi_epi16)(mix1, mix3);
+		
+#ifdef __AVX2__
+		mix0 = _mm256_permute2x128_si256(s0, s1, 0x20);
+		mix1 = _mm256_permute2x128_si256(s2, s3, 0x20);
+		mix2 = _mm256_permute2x128_si256(s0, s1, 0x31);
+		mix3 = _mm256_permute2x128_si256(s2, s3, 0x31);
+		s0 = mix0;
+		s1 = mix1;
+		s2 = mix2;
+		s3 = mix3;
+#endif
+		
+		MIVEC* d = reinterpret_cast<MIVEC*>(dst + x*4);
+		MMSI(store)(d+0, s0);
+		MMSI(store)(d+1, s1);
+		MMSI(store)(d+2, s2);
+		MMSI(store)(d+3, s3);
 	}
 	for(; x<width; x++) {
 		dst[x*4 +0] = src0[x];
@@ -196,26 +249,42 @@ static inline void interleave4x16b(uint8_t* VS_RESTRICT dst, const uint8_t* VS_R
 	
 	int x = 0;
 	for(; x<width-MWORD_SIZE/2+1; x+=MWORD_SIZE/2) {
-		__m128i s0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s0_16 + x));
-		__m128i s1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s1_16 + x));
-		__m128i s2 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s2_16 + x));
-		__m128i s3 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(s3_16 + x));
+		MIVEC s0 = MMSI(loadu)(reinterpret_cast<const MIVEC*>(s0_16 + x));
+		MIVEC s1 = MMSI(loadu)(reinterpret_cast<const MIVEC*>(s1_16 + x));
+		MIVEC s2 = MMSI(loadu)(reinterpret_cast<const MIVEC*>(s2_16 + x));
+		MIVEC s3 = MMSI(loadu)(reinterpret_cast<const MIVEC*>(s3_16 + x));
 		
-		s0 = _mm_or_si128(_mm_sll_epi16(s0, vshl), _mm_srl_epi16(s0, vshr));
-		s1 = _mm_or_si128(_mm_sll_epi16(s1, vshl), _mm_srl_epi16(s1, vshr));
-		s2 = _mm_or_si128(_mm_sll_epi16(s2, vshl), _mm_srl_epi16(s2, vshr));
-		s3 = _mm_or_si128(_mm_sll_epi16(s3, vshl), _mm_srl_epi16(s3, vshr));
+		s0 = MMSI(or)(MM(sll_epi16)(s0, vshl), MM(srl_epi16)(s0, vshr));
+		s1 = MMSI(or)(MM(sll_epi16)(s1, vshl), MM(srl_epi16)(s1, vshr));
+		s2 = MMSI(or)(MM(sll_epi16)(s2, vshl), MM(srl_epi16)(s2, vshr));
+		s3 = MMSI(or)(MM(sll_epi16)(s3, vshl), MM(srl_epi16)(s3, vshr));
 		
-		__m128i mix0 = _mm_unpacklo_epi16(s0, s1);
-		__m128i mix1 = _mm_unpackhi_epi16(s0, s1);
-		__m128i mix2 = _mm_unpacklo_epi16(s2, s3);
-		__m128i mix3 = _mm_unpackhi_epi16(s2, s3);
+		MIVEC mix0 = MM(unpacklo_epi16)(s0, s1);
+		MIVEC mix1 = MM(unpackhi_epi16)(s0, s1);
+		MIVEC mix2 = MM(unpacklo_epi16)(s2, s3);
+		MIVEC mix3 = MM(unpackhi_epi16)(s2, s3);
 		
-		__m128i* d = reinterpret_cast<__m128i*>(d16 + x*4);
-		_mm_store_si128(d+0, _mm_unpacklo_epi32(mix0, mix2));
-		_mm_store_si128(d+1, _mm_unpackhi_epi32(mix0, mix2));
-		_mm_store_si128(d+2, _mm_unpacklo_epi32(mix1, mix3));
-		_mm_store_si128(d+3, _mm_unpackhi_epi32(mix1, mix3));
+		s0 = MM(unpacklo_epi32)(mix0, mix2);
+		s1 = MM(unpackhi_epi32)(mix0, mix2);
+		s2 = MM(unpacklo_epi32)(mix1, mix3);
+		s3 = MM(unpackhi_epi32)(mix1, mix3);
+		
+#ifdef __AVX2__
+		mix0 = _mm256_permute2x128_si256(s0, s1, 0x20);
+		mix1 = _mm256_permute2x128_si256(s2, s3, 0x20);
+		mix2 = _mm256_permute2x128_si256(s0, s1, 0x31);
+		mix3 = _mm256_permute2x128_si256(s2, s3, 0x31);
+		s0 = mix0;
+		s1 = mix1;
+		s2 = mix2;
+		s3 = mix3;
+#endif
+		
+		MIVEC* d = reinterpret_cast<MIVEC*>(d16 + x*4);
+		MMSI(store)(d+0, s0);
+		MMSI(store)(d+1, s1);
+		MMSI(store)(d+2, s2);
+		MMSI(store)(d+3, s3);
 	}
 	for(; x<width; x++) {
 		d16[x*4 +0] = (s0_16[x] << shl) | (s0_16[x] >> shr);
